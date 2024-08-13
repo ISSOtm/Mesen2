@@ -9,11 +9,13 @@ MESENFLAGS=
 ifeq ($(USE_GCC),true)
 	CXX := g++
 	CC := gcc
+	AR := gcc-ar
 	PROFILE_GEN_FLAG := -fprofile-generate
 	PROFILE_USE_FLAG := -fprofile-use
 else
 	CXX := clang++
 	CC := clang
+	AR := llvm-ar
 	PROFILE_GEN_FLAG := -fprofile-instr-generate=$(CURDIR)/PGOHelper/pgo.profraw
 	PROFILE_USE_FLAG := -fprofile-instr-use=$(CURDIR)/PGOHelper/pgo.profdata
 endif
@@ -30,11 +32,13 @@ UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
 	MESENOS := linux
 	SHAREDLIB := MesenCore.so
+	STATICLIB := MesenCore.a
 endif
 
 ifeq ($(UNAME_S),Darwin)
 	MESENOS := osx
 	SHAREDLIB := MesenCore.dylib
+	STATICLIB := MesenCore.a
 	LTO := false
 	STATICLINK := false
 	LINKCHECKUNRESOLVED :=
@@ -96,7 +100,7 @@ ifeq ($(PGO),optimize)
 endif
 
 ifneq ($(STATICLINK),false)
-	LINKOPTIONS += -static-libgcc -static-libstdc++ 
+	LINKOPTIONS += -static-libgcc -static-libstdc++
 endif
 
 ifeq ($(MESENOS),osx)
@@ -175,18 +179,26 @@ else
 	X11LIB :=
 endif
 
-FSLIB := -lstdc++fs
+STDCXXLIB := -lstdc++
 
 ifeq ($(MESENOS),osx)
-	LIBEVDEVOBJ := 
-	LIBEVDEVINC := 
-	LIBEVDEVSRC := 
-	FSLIB := 
+	LIBEVDEVOBJ :=
+	LIBEVDEVINC :=
+	LIBEVDEVSRC :=
+	STDCXXLIB :=
 	PUBLISHFLAGS := -t:BundleApp -p:UseAppHost=true -p:RuntimeIdentifier=$(MESENPLATFORM) -p:SelfContained=true -p:PublishSingleFile=false -p:PublishReadyToRun=false
 endif
 
 all: ui
 
+STATIC_CORE := false
+
+ifneq ($(STATIC_CORE),false)
+ui: InteropDLL/$(OBJFOLDER)/$(STATICLIB) InteropDLL/staticlink.targets
+PUBLISHFLAGS += -p:StaticCore=true
+else
+ui: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
+endif
 # Why do we `dotnet publish` twice?
 # Well, Mesen2 wants to be entirely self-contained, *but* it depends on two native libraries
 # (`libSkiaSharp` and `libHarfBuzzSharp`). It wants to embark those libraries in its `Dependencies.zip`
@@ -195,21 +207,22 @@ all: ui
 # BUT, msbuild only copies the libraries to `$(OUTFOLDER)` *after* building Mesen2!
 # So, we need to build once to get the libs (but the flags there don't matter, it's a dummy build after all)
 # and *then* build for real.
-ui: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
+ui:
 	mkdir -p $(OUTFOLDER)/Dependencies
 	rm -fr $(OUTFOLDER)/Dependencies/*
-	cp InteropDLL/$(OBJFOLDER)/$(SHAREDLIB) $(OUTFOLDER)/$(SHAREDLIB)
+	-cp InteropDLL/$(OBJFOLDER)/$(SHAREDLIB) $(OUTFOLDER)/$(SHAREDLIB)
 	cd UI && dotnet publish -c $(BUILD_TYPE) $(OPTIMIZEUI) -r $(MESENPLATFORM)
 	cd UI && dotnet publish -c $(BUILD_TYPE) $(OPTIMIZEUI) $(PUBLISHFLAGS)
+	rm -f InteropDLL/staticlink.targets
 
 core: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
 
 pgohelper: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
-	mkdir -p PGOHelper/$(OBJFOLDER) && cd PGOHelper/$(OBJFOLDER) && $(CXX) $(CXXFLAGS) $(LINKCHECKUNRESOLVED) -o pgohelper ../PGOHelper.cpp ../../bin/pgohelperlib.so -pthread $(FSLIB) $(SDL2LIB) $(LIBEVDEVLIB) $(X11LIB)
+	mkdir -p PGOHelper/$(OBJFOLDER) && cd PGOHelper/$(OBJFOLDER) && $(CXX) $(CXXFLAGS) $(LINKCHECKUNRESOLVED) -o pgohelper ../PGOHelper.cpp ../../bin/pgohelperlib.so -pthread $(STDCXXLIB) $(SDL2LIB) $(LIBEVDEVLIB) $(X11LIB)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
-	
+
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -219,9 +232,23 @@ pgohelper: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
 InteropDLL/$(OBJFOLDER)/$(SHAREDLIB): $(SEVENZIPOBJ) $(LUAOBJ) $(UTILOBJ) $(COREOBJ) $(SDLOBJ) $(LIBEVDEVOBJ) $(LINUXOBJ) $(DLLOBJ) $(MACOSOBJ)
 	mkdir -p bin
 	mkdir -p InteropDLL/$(OBJFOLDER)
-	$(CXX) $(CXXFLAGS) $(LINKOPTIONS) $(LINKCHECKUNRESOLVED) -shared -o $(SHAREDLIB) $(DLLOBJ) $(SEVENZIPOBJ) $(LUAOBJ) $(LINUXOBJ) $(MACOSOBJ) $(LIBEVDEVOBJ) $(UTILOBJ) $(SDLOBJ) $(COREOBJ) $(SDL2INC) -pthread $(FSLIB) $(SDL2LIB) $(LIBEVDEVLIB) $(X11LIB)
+	$(CXX) $(CXXFLAGS) $(LINKOPTIONS) $(LINKCHECKUNRESOLVED) -shared -o $(SHAREDLIB) $^ $(SDL2INC) -pthread $(STDCXXLIB) $(SDL2LIB) $(LIBEVDEVLIB) $(X11LIB)
 	cp $(SHAREDLIB) bin/pgohelperlib.so
-	mv $(SHAREDLIB) InteropDLL/$(OBJFOLDER)
+	mv $(SHAREDLIB) InteropDLL/$(OBJFOLDER)/
+
+InteropDLL/$(OBJFOLDER)/$(STATICLIB): $(SEVENZIPOBJ) $(LUAOBJ) $(UTILOBJ) $(COREOBJ) $(SDLOBJ) $(LIBEVDEVOBJ) $(LINUXOBJ) $(DLLOBJ) $(MACOSOBJ)
+	mkdir -p bin
+	mkdir -p InteropDLL/$(OBJFOLDER)
+	$(AR) rcusT $@ $^
+
+InteropDLL/staticlink.targets:
+	echo '<Project>' >$@
+	echo '<ItemGroup>' >>$@
+	echo '<DirectPInvoke Include="MesenCore" />' >> $@
+	echo '<NativeLibrary Include="../InteropDLL/$(OBJFOLDER)/$(STATICLIB) $(CXXFLAGS) $(LINKOPTIONS) $(LINKCHECKUNRESOLVED) $(SDL2INC) -pthread $(STDCXXLIB) $(SDL2LIB) $(LIBEVDEVLIB) $(X11LIB)" />' >>$@
+	echo '</ItemGroup>' >>$@
+	echo '</Project>' >>$@
+
 
 pgo:
 	./buildPGO.sh

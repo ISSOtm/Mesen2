@@ -15,11 +15,11 @@ namespace Mesen.Interop
 {
 	public class EmuApi
 	{
-		public const string DllName = "MesenCore.dll";
+		public const string DllName = "MesenCore";
 		private const string DllPath = EmuApi.DllName;
 
 		[DllImport(DllPath)] [return: MarshalAs(UnmanagedType.I1)] public static extern bool TestDll();
-		[DllImport(DllPath)] public static extern void InitDll();
+		[DllImport("MesenCore")] public static extern void InitDll();
 
 		[DllImport(DllPath, EntryPoint = "GetMesenVersion")] private static extern UInt32 GetMesenVersionWrapper();
 		public static Version GetMesenVersion()
